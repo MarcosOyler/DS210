@@ -1,84 +1,11 @@
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-use std::path::Path;
+mod graph;
+use graph::Graph; 
+use std::io::{self, Write};
 
-
-pub struct Graph {
-   pub adjacency_list: HashMap<i32, Vec<i32>>,
-}
-
-
-impl Graph {
-   pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Graph> {
-       let file = File::open(path)?;
-       let reader = BufReader::new(file);
-
-
-       let mut adjacency_list = HashMap::new();
-
-
-       for line in reader.lines() {
-           let line = line?;
-           let parts: Vec<&str> = line.split_whitespace().collect();
-           if parts.len() == 2 {
-               let from = parts[0].parse::<i32>().unwrap();
-               let to = parts[1].parse::<i32>().unwrap();
-               adjacency_list.entry(from).or_insert_with(Vec::new).push(to);
-           }
-       }
-
-
-       Ok(Graph { adjacency_list })
-   }
-
-
-   pub fn get_neighbors(&self, vertex: i32) -> Option<&Vec<i32>> {
-       self.adjacency_list.get(&vertex)
-   }
-}
-
-
-fn compute_distances_bfs(start: i32, graph: &Graph) -> HashMap<i32, u32> {
-   let mut distance = HashMap::new();
-   distance.insert(start, 0);
-
-
-   let mut queue = VecDeque::new();
-   queue.push_back(start);
-
-
-   while let Some(v) = queue.pop_front() {
-       if let Some(neighbors) = graph.get_neighbors(v) {
-           for &u in neighbors {
-               if !distance.contains_key(&u) {
-                   distance.insert(u, distance[&v] + 1);
-                   queue.push_back(u);
-               }
-           }
-       }
-   }
-
-
-   distance
-}
-
-
-fn compute_all_distances(graph: &Graph) -> HashMap<i32, HashMap<i32, u32>> {
-   let mut all_distances = HashMap::new();
-
-
-   for &vertex in graph.adjacency_list.keys() {
-       let distances = compute_distances_bfs(vertex, graph);
-       all_distances.insert(vertex, distances);
-   }
-
-
-   all_distances
-}
 fn total_unique_nodes(graph: &Graph) -> usize {
    let mut unique_nodes = std::collections::HashSet::new();
-  
+
    for (&key, values) in graph.adjacency_list.iter() {
        unique_nodes.insert(key); // Insert the key
        for &value in values {
@@ -90,87 +17,195 @@ fn total_unique_nodes(graph: &Graph) -> usize {
    unique_nodes.len()
 }
 
+fn compute_distances_from_vertex(start: i32, graph: &Graph) -> HashMap<i32, u32> {
+    let mut distances = HashMap::new();
+    let mut queue = VecDeque::new();
 
+    distances.insert(start, 0);
+    queue.push_back(start);
+/*  The below uses a while loop that assigns the variable current to whatever vertex is popped from 
+the front */
+    while let Some(current) = queue.pop_front() {
+        let current_distance = distances[&current];
+        if let Some(neighbors) = graph.get_neighbors(current) {
+            for &neighbor in neighbors {
+                if !distances.contains_key(&neighbor) {
+                    distances.insert(neighbor, current_distance + 1);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
 
+    distances
+}
 
+/// Computes all pairwise distances in the graph using BFS for each vertex.
+fn compute_all_distances(graph: &Graph) -> HashMap<i32, HashMap<i32, u32>> {
+    let mut all_distances = HashMap::new();
+
+    for &vertex in graph.adjacency_list.keys() {
+        let distances = compute_distances_from_vertex(vertex, graph);
+        all_distances.insert(vertex, distances);
+    }
+
+    all_distances
+}
+
+/// Calculates the number of connections each vertex has.
+fn calculate_connection_counts(distances: &HashMap<i32, HashMap<i32, u32>>) -> HashMap<i32, usize> {
+    distances.iter().map(|(&vertex, dist_map)| (vertex, dist_map.len())).collect()
+}
+
+/// Calculates and returns the largest web size within 6 degrees and the corresponding vertex.
+fn find_largest_web_within_six_degrees(distances: &HashMap<i32, HashMap<i32, u32>>) -> (Option<i32>, usize) {
+    let mut max_web_size = 0;
+    let mut vertex_with_max_web = None;
+
+    for (&vertex, dist_map) in distances {
+        let web_size = dist_map.values().filter(|&&d| d <= 6).count();
+        if web_size > max_web_size {
+            max_web_size = web_size;
+            vertex_with_max_web = Some(vertex);
+        }
+    }
+
+    (vertex_with_max_web, max_web_size)
+}
+
+/// Identifies the mode of the connection counts.
+fn find_mode_vertex(connection_counts: &HashMap<i32, usize>) -> Option<usize> {
+    let mut frequency = HashMap::new();
+    let mut max_freq = 0;
+    let mut mode_vertex = None;
+
+    for &count in connection_counts.values() {
+        let count_freq = frequency.entry(count).or_insert(0);
+        *count_freq += 1;
+
+        if *count_freq > max_freq {
+            max_freq = *count_freq;
+            mode_vertex = Some(count);
+        }
+    }
+
+    mode_vertex
+}
+pub fn analyze_graph(graph: &Graph) {
+    let all_distances = compute_all_distances(graph);
+    let connection_counts = calculate_connection_counts(&all_distances);
+    let (vertex_with_max_web, max_web_size) = find_largest_web_within_six_degrees(&all_distances);
+    let mode_vertex = find_mode_vertex(&connection_counts);
+
+    println!("Vertex with the largest web within 6 degrees: {:?}", vertex_with_max_web);
+    println!("Size of the largest web within 6 degrees: {}", max_web_size);
+    println!("Mode vertex by number of connections: {:?}", mode_vertex);
+}
+
+pub fn print_top_vertices_by_neighbors<W: Write>(graph: &Graph, top_n: usize, writer: &mut W) -> io::Result<()> {
+    let mut neighbor_counts: Vec<(i32, usize)> = graph.adjacency_list.iter()
+        .map(|(vertex, neighbors)| (*vertex, neighbors.len()))
+        .collect();
+
+    neighbor_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_vertices = neighbor_counts.iter().take(top_n);
+
+    writeln!(writer, "Top {} vertices by number of neighbors:", top_n)?;
+    for (vertex, count) in top_vertices {
+        writeln!(writer, "Vertex {}: {} neighbors", vertex, count)?;
+    }
+    Ok(())
+}
 fn analyze_six_degrees(all_distances: &HashMap<i32, HashMap<i32, u32>>) -> (HashMap<i32, usize>, f64) {
-   let num_vertices = all_distances.len() as f64;
-   let mut within_six_degrees = HashMap::new();
-   let mut total_within_six = 0;
+    let num_vertices = all_distances.len() as f64;
+    let mut within_six_degrees = HashMap::new();
+    let mut total_within_six = 0;
+ 
+ 
+    for (vertex, distances) in all_distances {
+        let count = distances.values().filter(|&&d| d <= 6 && d > 0).count();
+        within_six_degrees.insert(*vertex, count);
+        total_within_six += count;
+    }
+ 
+ 
+    let average_percentage = total_within_six as f64 / num_vertices / num_vertices * 100.0;
+ 
+ 
+    (within_six_degrees, average_percentage)
+ }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::str;
 
+    #[test]
+    fn test_print_top_vertices_by_neighbors() {
+        let mut graph = Graph {
+            adjacency_list: HashMap::new(),
+        };
 
-   for (vertex, distances) in all_distances {
-       let count = distances.values().filter(|&&d| d <= 6 && d > 0).count();
-       within_six_degrees.insert(*vertex, count);
-       total_within_six += count;
-   }
+        // Setup a simple graph
+        graph.adjacency_list.insert(0, vec![1, 2, 3]);
+        graph.adjacency_list.insert(1, vec![0, 2]);
+        graph.adjacency_list.insert(2, vec![0, 1]);
+        graph.adjacency_list.insert(3, vec![0]);
 
+        let mut output = vec![];
+        print_top_vertices_by_neighbors(&graph, 2, &mut output).unwrap();
 
-   let average_percentage = total_within_six as f64 / num_vertices / num_vertices * 100.0;
+        let output_str = str::from_utf8(&output).unwrap();
+        assert!(output_str.contains("Top 2 vertices by number of neighbors:"));
+        assert!(output_str.contains("Vertex 0: 3 neighbors"));
+        assert!(output_str.contains("Vertex 1: 2 neighbors"));
+    }
 
+    #[test]
+    fn test_compute_all_distances() {
+        let mut graph = Graph {
+            adjacency_list: HashMap::new(),
+        };
+        // Creating an undirected graph: 0 - 1 - 2 (both directions)
+        graph.adjacency_list.insert(0, vec![1]);
+        graph.adjacency_list.insert(1, vec![0, 2]);
+        graph.adjacency_list.insert(2, vec![1]);
 
-   (within_six_degrees, average_percentage)
-}
-fn largest_web_within_six_degrees(all_distances: &HashMap<i32, HashMap<i32, u32>>) -> usize {
-   let mut max_web_size = 0;
+        let distances = compute_all_distances(&graph);
 
+        assert_eq!(distances[&0][&1], 1); // Check distance from 0 to 1
+        assert_eq!(distances[&1][&2], 1); // Check distance from 1 to 2
+        assert_eq!(distances[&0][&2], 2); // Check distance from 0 to 2 through 1
+        assert_eq!(distances[&2][&0], 2); // Check distance from 2 to 0 through 1
+    }
 
-   // Iterate over each node to determine the size of the "web" it forms with others within 6 degrees
-   for (_node, distances) in all_distances {
-       let web_size = distances.iter()
-                               .filter(|&(_, &dist)| dist <= 6)  // Only consider nodes within 6 degrees
-                               .count();
+    #[test]
+    fn test_compute_distances_from_vertex() {
+        let mut graph = Graph {
+            adjacency_list: HashMap::new(),
+        };
+        // Creating an undirected graph: 0 - 1 - 2 - 3 (chain)
+        graph.adjacency_list.insert(0, vec![1]);
+        graph.adjacency_list.insert(1, vec![0, 2]);
+        graph.adjacency_list.insert(2, vec![1, 3]);
+        graph.adjacency_list.insert(3, vec![2]);
 
+        let distances = compute_distances_from_vertex(0, &graph);
 
-       if web_size > max_web_size {
-           max_web_size = web_size;
-       }
-   }
-
-
-   max_web_size
-}
-fn analyze_graph(graph: &Graph) {
-   let all_distances = compute_all_distances(graph);
-
-
-   // Compute various statistics
-   let mut total_connections = 0;
-   let mut connection_counts = HashMap::new();
-   let mut distance_counts = HashMap::new();
-   let mut total_distance = 0;
-   let mut num_distances = 0;
-
-
-   for (vertex, distances) in &all_distances {
-       connection_counts.insert(*vertex, distances.len());
-       total_connections += distances.len();
-
-
-       for &distance in distances.values() {
-           *distance_counts.entry(distance).or_insert(0) += 1;
-           total_distance += distance as usize;
-           num_distances += 1;
-       }
-   }
-
-   let avg_connections = total_connections as f64 / all_distances.len() as f64;
-   let mean_distance = total_distance as f64 / num_distances as f64;
-   let mode_distance = find_mode(&distance_counts);
-
-   println!("Average number of connections per vertex: {:.2}", avg_connections);
-   println!("Mean distance between vertices: {:.2}", mean_distance);
-   println!("Mode distance between vertices: {:?}", mode_distance);
+        assert_eq!(distances[&1], 1); // Direct neighbor
+        assert_eq!(distances[&2], 2); // Two hops away
+        assert_eq!(distances[&3], 3); // Three hops away
+    }
 }
 
 fn main() {
    let graph = Graph::new("facebook_combined.txt").unwrap();
+   let mut stdout = io::stdout();
+   
+  println!("Adjacency list length: {}", graph.adjacency_list.len());
 
 
-   println!("Adjacency list length: {}", graph.adjacency_list.len());
-
-
-   println!("{}", total_unique_nodes(&graph));
+   println!("Number of Nodes {}", total_unique_nodes(&graph));
 
 
    // Compute distances for all vertices
@@ -181,6 +216,7 @@ fn main() {
    for (vertex, neighbors) in graph.adjacency_list.iter().take(5) {
        println!("Vertex {}: {:?}", vertex, neighbors);
    }
+   print_top_vertices_by_neighbors(&graph, 5, &mut stdout).unwrap();
 
 
    // Print a sample of the distances from a few vertices to keep the output small
@@ -200,9 +236,7 @@ fn main() {
        println!("Vertex {}: {} vertices within 6 degrees", vertex, count);
    }
    println!("Average percentage of vertices within 6 degrees of any vertex: {:.2}%", avg_percent);
-   let max_web_size = largest_web_within_six_degrees(&all_distances);
-   println!("The largest web size within 6 degrees is: {}", max_web_size);
-   analyze_graph(&graph);
+   analyze_graph(&graph); 
 }
 
 
